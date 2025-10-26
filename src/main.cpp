@@ -238,9 +238,6 @@ void zboss_signal_handler(zb_bufid_t bufid)
 {
         zb_zdo_app_signal_hdr_t *pHdr;
         auto signalId = zb_get_app_signal(bufid, &pHdr);
-        //zb_ret_t status = zb_buf_get_status(bufid);
-	//if (factory_reset_start && !g_FactoryResetOnNoJoin.IsRunning())
-	//    g_FactoryResetOnNoJoin.Setup(do_factory_reset, nullptr, kFactoryResetWaitMS);
 
 	auto ret = zb::tpl_signal_handler<zb::sig_handlers_t{
 	.on_leave = +[]{ 
@@ -248,7 +245,7 @@ void zboss_signal_handler(zb_bufid_t bufid)
 	    k_sleep(K_MSEC(2100));
 	    sys_reboot(SYS_REBOOT_COLD);
 	},
-	    //.on_error = []{ led::show_pattern(led::kPATTERN_3_BLIPS_NORMED, 1000); },
+	    .on_error = []{ led::show_pattern(led::kPATTERN_3_BLIPS_NORMED, 1000); },
 	    .on_dev_reboot = on_zigbee_start,
 	    .on_steering = on_zigbee_start,
 	    .on_can_sleep = &zb_sleep_now
@@ -264,49 +261,49 @@ void on_dev_cb_error(int err)
     printk("on_dev_cb_error: %d\r\n", err);
 }
 
-//settings_handler settings_zb_accel = { 
+//settings_handler settings_zb_co2 = { 
 //			      .name = SETTINGS_ZB_CO2_SUBTREE,
 //                              .h_set = settings_mgr::zigbee_settings_set,
 //                              .h_export = settings_mgr::zigbee_settings_export
 //};
 
-int8_t g_RestartsToFactoryResetLeft = kRestartCountToFactoryReset;
-#define SETTINGS_DEV_SUBTREE "dev"
-#define SETTINGS_DEV_RESTARTS_LEFT "restarts_left"
-static int device_settings_set(const char *name, size_t len,
-	settings_read_cb read_cb, void *cb_arg)
+/**********************************************************************/
+/* Factory Reset Handling                                             */
+/**********************************************************************/
+zb::ZbTimerExt g_FactoryResetDoneChecker;
+/**@brief Callback for button events.
+ *
+ * @param[in]   button_state  Bitmask containing the state of the buttons.
+ * @param[in]   has_changed   Bitmask containing buttons that have changed their state.
+ */
+static void button_changed(uint32_t button_state, uint32_t has_changed)
 {
-    int rc;
-    bool found = false;
-    const char *next;
-    if (settings_name_steq(name, SETTINGS_DEV_RESTARTS_LEFT, &next) && !next) {
-	if (len != sizeof(g_RestartsToFactoryResetLeft))
-	    return -EINVAL;
-
-	rc = read_cb(cb_arg, &g_RestartsToFactoryResetLeft, sizeof(g_RestartsToFactoryResetLeft));
-	if (rc >= 0)
-	{
-	    if (rc != sizeof(g_RestartsToFactoryResetLeft))
-		return -EINVAL;
+    if (FACTORY_RESET_BUTTON & has_changed) {
+	if (FACTORY_RESET_BUTTON & button_state) {
+	    /* Button changed its state to pressed */
+	    g_FactoryResetDoneChecker.Setup([]{
+		    if (was_factory_reset_done()) {
+			/* The long press was for Factory Reset */
+			led::show_pattern(led::kPATTERN_2_BLIPS_NORMED, 2000);
+			return false;
+		    }
+		    return true;
+	    }, 1000);
+	} else {
+	    /* Button changed its state to released */
+	    if (!was_factory_reset_done()) {
+		/* Button released before Factory Reset */
+		g_FactoryResetDoneChecker.Cancel();
+		led::show_pattern(led::kPATTERN_2_BLIPS_NORMED, 500);
+	    }
 	}
-	return 0;
+	check_factory_reset_button(button_state, has_changed);
     }
-
-    return -ENOENT;
 }
 
-static int device_settings_export(int (*cb)(const char *name,
-	    const void *value, size_t val_len))
-{
-    return cb(SETTINGS_DEV_SUBTREE "/" SETTINGS_DEV_RESTARTS_LEFT, &g_RestartsToFactoryResetLeft, sizeof(g_RestartsToFactoryResetLeft));
-}
-
-settings_handler settings_dev = { 
-			      .name = "dev",
-                              .h_set = device_settings_set,
-                              .h_export = device_settings_export
-};
-zb::ZbAlarm g_ResetRestartsLeftAlarm;
+/**********************************************************************/
+/* End Of Factory Reset Handling                                      */
+/**********************************************************************/
 
 int main(void)
 {
@@ -340,22 +337,18 @@ int main(void)
 
     printk("Main: before settings init\r\n");
     int err = settings_subsys_init();
-    //settings_register(&settings_zb_accel);
+    //settings_register(&settings_zb_co2);
     //settings_register(&settings_dev);
 
     err = settings_load();
-    --g_RestartsToFactoryResetLeft;
-	//   factory_reset_start = g_RestartsToFactoryResetLeft == 0;
-	//   if (factory_reset_start)
-	//led::show_pattern(led::kPATTERN_2_BLIPS_NORMED, 1000); 
-
-    bool factory_reset_finish = g_RestartsToFactoryResetLeft < 0;
-    if (factory_reset_finish)
-	g_RestartsToFactoryResetLeft = kRestartCountToFactoryReset;
-    settings_save_subtree(SETTINGS_DEV_SUBTREE);
-
     printk("Main: before zigbee erase persistent storage\r\n");
-    zigbee_erase_persistent_storage(factory_reset_finish);
+
+    //configure button handler
+    err = dk_buttons_init(button_changed);
+    //assign a button for a factory reset procedure
+    register_factory_reset_button(FACTORY_RESET_BUTTON);
+
+    zigbee_erase_persistent_storage(false);
     zb_set_ed_timeout(ED_AGING_TIMEOUT_64MIN);
     zb_set_keepalive_timeout(ZB_MILLISECONDS_TO_BEACON_INTERVAL(kKeepAliveTimeout));
 
@@ -385,14 +378,6 @@ int main(void)
 
     printk("Main: before zigbee enable\r\n");
     zigbee_enable();
-    g_ResetRestartsLeftAlarm.Setup(
-	    [](void*)
-	    { 
-		g_RestartsToFactoryResetLeft = kRestartCountToFactoryReset; 
-		settings_save_subtree(SETTINGS_DEV_SUBTREE);
-		printk("Restart left count reset\r\n");
-	    }, nullptr, kRestartCounterResetTimeoutMS);
-
     printk("Main: sleep forever\r\n");
     while (1) {
 	k_sleep(K_FOREVER);

@@ -19,7 +19,7 @@
 #include <nrfzbcpp/zb_main.hpp>
 #include <nrfzbcpp/zb_std_cluster_desc.hpp>
 #include <nrfzbcpp/zb_power_config_cluster_desc.hpp>
-#include <nrfzbcpp/zb_poll_ctrl_cluster_desc.hpp>
+#include <nrfzbcpp/zb_poll_ctrl_tools.hpp>
 
 #include <nrfzbcpp/zb_status_cluster_desc.hpp>
 
@@ -247,32 +247,16 @@ void on_settings_changed(const uint32_t &v)
     reconfigure_interrupts();
 }
 
-zb::ZbAlarm g_EnterLowPowerLongPollMode;
-
 void on_zigbee_start()
 {
     printk("on_zigbee_start\r\n");
     g_ZigbeeReady = true;
-    zb_zcl_poll_control_start(0, kCO2_EP);
-    zb_zcl_poll_controll_register_cb(&update_battery_state_zb);
 
-    if constexpr (kPowerSaving)
-    {
-	//we start with 2-sec long poll for the first 30 seconds
-	zb_zdo_pim_set_long_poll_interval(1000 * 2);
-	g_EnterLowPowerLongPollMode.Setup([](void*){
-	    if (dev_ctx.poll_ctrl.long_poll_interval != 0xffffffff)
-	    {
-		printk("on_zigbee_start: long poll set to power save %d ms\r\n", (dev_ctx.poll_ctrl.long_poll_interval * 1000 / 4));
-		zb_zdo_pim_set_long_poll_interval(dev_ctx.poll_ctrl.long_poll_interval * 1000 / 4);
-	    }
-	}, nullptr, 30 * 1000);
-    }
-    else
-    {
-	printk("on_zigbee_start: long poll set to non-power save\r\n");
-	zb_zdo_pim_set_long_poll_interval(1000 * 10);
-    }
+    configure_poll_control<{
+	.ep = kCO2_EP, 
+	.callback_on_check_in = update_battery_state_zb, 
+	.sleepy_end_device = kPowerSaving
+    }>(dev_ctx.poll_ctrl);
 
     //should be there already, initial state
     //udpate_accel_values(0);

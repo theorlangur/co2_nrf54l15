@@ -18,7 +18,8 @@
 //#define ALARM_LIST_LOCK_TYPE thread::DummyLock
 #include <nrfzbcpp/zb_main.hpp>
 #include <nrfzbcpp/zb_std_cluster_desc.hpp>
-#include <nrfzbcpp/zb_power_config_cluster_desc.hpp>
+
+#include <nrfzbcpp/zb_power_config_tools.hpp>
 #include <nrfzbcpp/zb_poll_ctrl_tools.hpp>
 
 #include <nrfzbcpp/zb_status_cluster_desc.hpp>
@@ -81,8 +82,6 @@ struct device_ctx_t{
 constexpr auto kAttrStatus1 = &zb::zb_zcl_status_t::status1;
 constexpr auto kAttrStatus2 = &zb::zb_zcl_status_t::status2;
 constexpr auto kAttrStatus3 = &zb::zb_zcl_status_t::status3;
-constexpr auto kAttrBattVoltage = &zb::zb_zcl_power_cfg_battery_info_t::batt_voltage;
-constexpr auto kAttrBattPercentage = &zb::zb_zcl_power_cfg_battery_info_t::batt_percentage_remaining;
 
 constexpr int kSleepSendStatusBit1 = 0;
 constexpr int kSleepSendStatusCodeOffset = 1;
@@ -184,10 +183,6 @@ static const struct gpio_dt_spec led_dt = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 /**********************************************************************/
 /* Battery management                                                 */
 /**********************************************************************/
-constexpr int32_t g_MaxBatteryVoltage = 1600;//mV
-constexpr int32_t g_MinBatteryVoltage = 900;//mV
-constexpr int32_t g_BatteryVoltageRange = g_MaxBatteryVoltage - g_MinBatteryVoltage;//mV
-										    //
 #define DT_SPEC_AND_COMMA(node_id, prop, idx) \
 	ADC_DT_SPEC_GET_BY_IDX(node_id, idx),
 
@@ -196,45 +191,16 @@ static const struct adc_dt_spec adc_channels[] = {
 			     DT_SPEC_AND_COMMA)
 };
 
-void update_battery_state_zb(uint8_t dummy)
-{
-    //bool rx_on_idle = zb_get_rx_on_when_idle();
-    //printk("update_battery_state_zb called (rx on idle=%d)\r\n", rx_on_idle);
-    uint16_t buf;
-    struct adc_sequence sequence = {
-	.buffer = &buf,
-	/* buffer size in bytes, not number of samples */
-	.buffer_size = sizeof(buf),
-    };
-    (void)adc_sequence_init_dt(&adc_channels[0], &sequence);
+static constinit auto g_Battery = zb::make_battery_measurements_block<{
+    .maxBatteryVoltage = 1600,//mV
+    .minBatteryVoltage = 900//mV
+}>(zb_ep, adc_channels);
+constexpr zb_callback_t update_battery_state_zb = &decltype(g_Battery)::update_zb_callback;
 
-    int err = adc_read_dt(&adc_channels[0], &sequence);
-    if (err == 0)
-    {
-	int32_t batteryVoltage = (int32_t)buf;
-	adc_raw_to_millivolts_dt(&adc_channels[0],
-		&batteryVoltage);
 
-	printk("update_battery_state_zb: volt %d\r\n", batteryVoltage);
-	zb_ep.attr<kAttrBattVoltage>() = uint8_t(batteryVoltage / 100);
-	zb_ep.attr<kAttrBattPercentage>() = uint8_t((batteryVoltage - g_MinBatteryVoltage) * 200 / g_BatteryVoltageRange);
-    }
-}
-
-static int configure_adc(void)
-{
-    if (!adc_is_ready_dt(&adc_channels[0])) {
-	printk("ADC controller device %s not ready\n", adc_channels[0].dev->name);
-	return -1;
-    }
-
-    int err = adc_channel_setup_dt(&adc_channels[0]);
-    if (err < 0) {
-	printk("Could not setup channel #%d (%d)\n", 0, err);
-	return err;
-    }
-    return 0;
-}
+/**********************************************************************/
+/* End of battery management                                          */
+/**********************************************************************/
 
 void reconfigure_interrupts()
 {
@@ -369,7 +335,7 @@ int main(void)
     }
 
     printk("Main: before configuring ADC\r\n");
-    if (configure_adc() < 0)
+    if (g_Battery.setup() < 0)
 	return 0;
 
     printk("Main: before settings init\r\n");

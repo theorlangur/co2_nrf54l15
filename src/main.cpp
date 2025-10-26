@@ -226,7 +226,7 @@ void on_zigbee_start()
 
     //should be there already, initial state
     //udpate_accel_values(0);
-    update_battery_state_zb(0);
+    g_Battery.update();
 }
 
 /**@brief Zigbee stack event handler.

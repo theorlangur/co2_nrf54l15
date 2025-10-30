@@ -12,6 +12,7 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/adc.h>
+#include <zephyr/drivers/regulator.h>
 
 #include <ram_pwrdn.h>
 
@@ -23,9 +24,14 @@
 #include <nrfzbcpp/zb_poll_ctrl_tools.hpp>
 
 #include <nrfzbcpp/zb_status_cluster_desc.hpp>
+#include <nrfzbcpp/zb_co2_cluster_desc.hpp>
+#include <nrfzbcpp/zb_temp_cluster_desc.hpp>
+#include <nrfzbcpp/zb_humid_cluster_desc.hpp>
 
 #include <nrfzbcpp/zb_alarm.hpp>
 #include <nrfzbcpp/zb_settings.hpp>
+
+#include <nrf_general/lib_msgq_typed.hpp>
 
 #include <dk_buttons_and_leds.h>
 #include "led.h"
@@ -75,13 +81,18 @@ struct device_ctx_t{
     zb::zb_zcl_power_cfg_battery_info_t battery_attr;
     zb::zb_zcl_poll_ctrl_basic_t poll_ctrl;
     zb::zb_zcl_status_t status_attr;
-    //add co2
+    zb::zb_zcl_co2_basic_t co2_attr;
+    zb::zb_zcl_temp_basic_t temp_attr;
+    zb::zb_zcl_rel_humid_basic_t humid_attr;
 };
 
 //attribute shortcuts for template arguments
 constexpr auto kAttrStatus1 = &zb::zb_zcl_status_t::status1;
 constexpr auto kAttrStatus2 = &zb::zb_zcl_status_t::status2;
 constexpr auto kAttrStatus3 = &zb::zb_zcl_status_t::status3;
+constexpr auto kAttrCO2Value = &zb::zb_zcl_co2_basic_t::measured_value;
+constexpr auto kAttrTempValue = &zb::zb_zcl_temp_basic_t::measured_value;
+constexpr auto kAttrRelHValue = &zb::zb_zcl_rel_humid_basic_t::measured_value;
 
 constexpr int kSleepSendStatusBit1 = 0;
 constexpr int kSleepSendStatusCodeOffset = 1;
@@ -107,6 +118,9 @@ static constinit device_ctx_t dev_ctx{
 	    .long_poll_interval = kInitialLongPollInterval,
 	    //.short_poll_interval = 1_sec_to_qs,
 	},
+    .co2_attr{
+	.measured_value = 0
+    }
 };
 
 //forward declare
@@ -119,56 +133,14 @@ constinit static auto zb_ctx = zb::make_device(
 	    , dev_ctx.battery_attr
 	    , dev_ctx.poll_ctrl
 	    , dev_ctx.status_attr
+	    , dev_ctx.co2_attr
+	    , dev_ctx.temp_attr
+	    , dev_ctx.humid_attr
 	    )
 	);
 
 //a shortcut for a convenient access
 constinit static auto &zb_ep = zb_ctx.ep<kCO2_EP>();
-
-//magic handwaving to avoid otherwise necessary command handling boilerplate
-//uses CRTP so that cluster_custom_handler_base_t would know the end type it needs to work with
-//template<> 
-//struct zb::cluster_custom_handler_t<device_ctx_t::accel_type, kACCEL_EP>: cluster_custom_handler_base_t<custom_accel_handler_t>
-//{
-//    //the rest will be done by cluster_custom_handler_base_t
-//    static auto& get_device() { return zb_ctx; }
-//};
-
-
-/**********************************************************************/
-/* Persisten settings                                                 */
-/**********************************************************************/
-
-#define SETTINGS_ZB_CO2_SUBTREE "zb_co2"
-struct ZbSettingsEntries
-{
-    //had to define the strings like that or otherwise passing 'const char*' as a template parameter at a compile time doesn't work
-    //it needs to have an extrenal linking
-    inline static constexpr const char wake_sleep_threshold[] = SETTINGS_ZB_CO2_SUBTREE "/wake_sleep_threshold";
-    inline static constexpr const char sleep_duration[] = SETTINGS_ZB_CO2_SUBTREE "/sleep_duration";
-    inline static constexpr const char sleep_tracking_rate[] = SETTINGS_ZB_CO2_SUBTREE "/sleep_tracking_rate";
-    inline static constexpr const char active_tracking_rate[] = SETTINGS_ZB_CO2_SUBTREE "/active_tracking_rate";
-};
-
-using settings_mgr = zb::persistent_settings_manager<
-    sizeof(SETTINGS_ZB_CO2_SUBTREE)
->;
-
-//helping constexpr template functions to wrap the change reaction logic into settings-storing logic
-template<auto h>
-constexpr zb::set_attr_value_handler_t to_settings_handler(const char *name)
-{
-    return settings_mgr::make_on_changed<zb::to_handler_v<h>>(name);
-}
-
-constexpr zb::set_attr_value_handler_t to_settings_handler(const char *name)
-{
-    return settings_mgr::make_on_changed<nullptr>(name);
-}
-
-/**********************************************************************/
-/* End of settings section                                            */
-/**********************************************************************/
 
 /**********************************************************************/
 /* ZephyrOS devices                                                   */
@@ -176,8 +148,9 @@ constexpr zb::set_attr_value_handler_t to_settings_handler(const char *name)
 
 /* The devicetree node identifier for the "led0" alias. */
 #define LED0_NODE DT_ALIAS(led0)
-static const struct device *const co2_dev = DEVICE_DT_GET(DT_NODELABEL(co2sensor));
+static const struct device *const co2sensor = DEVICE_DT_GET(DT_NODELABEL(co2sensor));
 static const struct gpio_dt_spec led_dt = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+constinit const struct device *co2_power = DEVICE_DT_GET(DT_NODELABEL(scd41_power));
 
 
 /**********************************************************************/
@@ -202,16 +175,133 @@ constexpr zb_callback_t update_battery_state_zb = &decltype(g_Battery)::update_z
 /* End of battery management                                          */
 /**********************************************************************/
 
-void reconfigure_interrupts()
+/**********************************************************************/
+/* Message Queue definitions + commands                               */
+/**********************************************************************/
+enum class CO2Commands
 {
-    //return;
+    Initial
+    , Fetch
+    , ManualFetch
+};
+
+using CO2Q = msgq::Queue<CO2Commands,4>;
+K_MSGQ_DEFINE_TYPED(CO2Q, co2v2);
+
+/**********************************************************************/
+/* CO2 measuring thread                                               */
+/**********************************************************************/
+void co2_thread_entry(void *, void *, void *);
+void update_co2_readings_in_zigbee(uint8_t id);
+
+constexpr size_t CO2_THREAD_STACK_SIZE = 512;
+constexpr size_t CO2_THREAD_PRIORITY=7;
+
+K_THREAD_DEFINE(co2_thread, CO2_THREAD_STACK_SIZE,
+	co2_thread_entry, NULL, NULL, NULL,
+	CO2_THREAD_PRIORITY, 0, -1);
+
+
+bool update_measurements()
+{
+    bool needsPowerCycle = false;
+    bool res = false;
+    if ((needsPowerCycle = !regulator_is_enabled(co2_power)))
+    {
+	regulator_enable(co2_power);
+	device_init(co2sensor);
+    }
+    if (device_is_ready(co2sensor)) {
+	int err = -EAGAIN;
+	int max_attempts = 3;
+	while((err == -EAGAIN) && max_attempts)
+	{
+	    err = sensor_sample_fetch(co2sensor);
+	    if (err == -EAGAIN)
+		k_sleep(K_MSEC(1000));
+	    --max_attempts;
+	}
+
+	if (err == 0)
+	{
+	    if (needsPowerCycle) //after power up 2 fetches are needed
+		sensor_sample_fetch(co2sensor);
+	}
+
+	res = true;
+    }
+
+    //if (zb::qs_to_s(dev_ctx.poll_ctrl.check_in_interval) >= kPowerCycleThresholdSeconds)//seconds
+    {
+	//check in interval is big enough to power down
+	regulator_disable(co2_power);
+    }
+    return res;
 }
 
-void on_settings_changed(const uint32_t &v)
+static constinit bool g_CO2ErrorState = false;
+void co2_thread_entry(void *, void *, void *)
 {
-    //printk("Settings. Now: %X; Stored: %X\r\n", v, dev_ctx.settings.flags_dw);
-    reconfigure_interrupts();
+    CO2Commands cmd;
+    bool needsPowerCycle = false;
+    static uint32_t g_last_mark = 0; 
+    while(1)
+    {
+	co2v2 >> cmd;
+	switch(cmd)
+	{
+	    using enum CO2Commands;
+	    case Initial:
+	    {
+		g_CO2ErrorState = !update_measurements();
+		zigbee_enable();
+	    }
+	    break;
+	    case Fetch:
+	    {
+		auto now = k_uptime_seconds();
+		if (g_last_mark && ((now - g_last_mark) < (zb::qs_to_s(dev_ctx.poll_ctrl.check_in_interval) / 2)))
+		{
+		    //to often
+		    continue;
+		}
+		g_last_mark = now;
+	    }
+	    [[fallthrough]];
+	    case ManualFetch:
+	    g_CO2ErrorState = !update_measurements();
+	    //post to zigbee thread
+	    zigbee_schedule_callback(update_co2_readings_in_zigbee, 0);
+	    break;
+	}
+    }
 }
+
+void update_co2_readings_in_zigbee(uint8_t id)
+{
+    g_Battery.update();
+    if (co2sensor && !g_CO2ErrorState)
+    {
+	sensor_value v;
+	sensor_channel_get(co2sensor, SENSOR_CHAN_CO2, &v);
+	zb_ep.attr<kAttrCO2Value>() = float(v.val1) / 1'000'000.f;
+	sensor_channel_get(co2sensor, SENSOR_CHAN_AMBIENT_TEMP, &v);
+	zb_ep.attr<kAttrTempValue>() = zb::zb_zcl_temp_t::FromC(float(v.val1) + float(v.val2) / 1000'000.f);
+	sensor_channel_get(co2sensor, SENSOR_CHAN_HUMIDITY, &v);
+	zb_ep.attr<kAttrRelHValue>() = zb::zb_zcl_rel_humid_t::FromRelH(float(v.val1) + float(v.val2) / 1000'000.f);
+
+	zb_ep.attr<kAttrStatus1>() = 0;
+	zb_ep.attr<kAttrStatus2>() = 0;
+    }else
+    {
+	if (g_CO2ErrorState) zb_ep.attr<kAttrStatus1>() = -1;
+	if (!co2sensor) zb_ep.attr<kAttrStatus2>() = -1;
+    }
+}
+
+/**********************************************************************/
+/* General Zigbee stuff                                               */
+/**********************************************************************/
 
 void on_zigbee_start()
 {
@@ -220,13 +310,10 @@ void on_zigbee_start()
 
     configure_poll_control<{
 	.ep = kCO2_EP, 
-	.callback_on_check_in = update_battery_state_zb, 
+	.callback_on_check_in = [](uint8_t){co2v2 << CO2Commands::Fetch;}, 
 	.sleepy_end_device = kPowerSaving
     }>(dev_ctx.poll_ctrl);
-
-    //should be there already, initial state
-    //udpate_accel_values(0);
-    g_Battery.update();
+    update_co2_readings_in_zigbee(0);
 }
 
 /**@brief Zigbee stack event handler.
@@ -315,20 +402,9 @@ int main(void)
 	return 0;
     led::start();
 
-    if (device_is_ready(co2_dev))
-    {
-	//if (dev_ctx.settings.active_odr == 0)
-	//    dev_ctx.settings.active_odr = lis2du12_get_odr(accel_dev);
-	//else
-	//{
-	//    if (lis2du12_set_odr(accel_dev, (lis2du12_odr_t)dev_ctx.settings.active_odr) < 0)
-	//	dev_ctx.status_attr.status2 = -1;
-	//}
-	reconfigure_interrupts();
-    }else
-    {
-	printk("Accelerometer is not ready\r\n");
-	dev_ctx.status_attr.status1 = -1;
+    if (!device_is_ready(co2_power)) {
+    	//printk("Power reg not ready");
+    	return 0;
     }
 
     printk("Main: before configuring ADC\r\n");
@@ -377,7 +453,10 @@ int main(void)
     ZB_AF_REGISTER_DEVICE_CTX(zb_ctx);
 
     printk("Main: before zigbee enable\r\n");
-    zigbee_enable();
+    k_thread_start(co2_thread);
+    co2v2 << CO2Commands::Initial;
+
+    //zigbee_enable();
     printk("Main: sleep forever\r\n");
     while (1) {
 	k_sleep(K_FOREVER);

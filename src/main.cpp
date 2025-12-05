@@ -123,10 +123,6 @@ static constinit device_ctx_t dev_ctx{
     }
 };
 
-//forward declare
-//template<> struct zb::cluster_custom_handler_t<device_ctx_t::accel_type, kACCEL_EP>;
-//using custom_accel_handler_t = zb::cluster_custom_handler_t<device_ctx_t::accel_type, kACCEL_EP>;
-
 constinit static auto zb_ctx = zb::make_device(
 	zb::make_ep_args<{.ep=kCO2_EP, .dev_id=kDEV_ID, .dev_ver=1}>(
 	    dev_ctx.basic_attr
@@ -348,12 +344,6 @@ void on_dev_cb_error(int err)
     printk("on_dev_cb_error: %d\r\n", err);
 }
 
-//settings_handler settings_zb_co2 = { 
-//			      .name = SETTINGS_ZB_CO2_SUBTREE,
-//                              .h_set = settings_mgr::zigbee_settings_set,
-//                              .h_export = settings_mgr::zigbee_settings_export
-//};
-
 /**********************************************************************/
 /* Factory Reset Handling                                             */
 /**********************************************************************/
@@ -413,9 +403,6 @@ int main(void)
 
     printk("Main: before settings init\r\n");
     int err = settings_subsys_init();
-    //settings_register(&settings_zb_co2);
-    //settings_register(&settings_dev);
-
     err = settings_load();
     printk("Main: before zigbee erase persistent storage\r\n");
 
@@ -437,15 +424,6 @@ int main(void)
     /* Register callback for handling ZCL commands. */
     auto dev_cb = zb::tpl_device_cb<
 	zb::dev_cb_handlers_desc{ .error_handler = on_dev_cb_error }
-	//handler
-	//   , zb::set_attr_val_gen_desc_t{
-	//{
-	//    .ep = kACCEL_EP,
-	//    .cluster = zb::kZB_ZCL_CLUSTER_ID_ACCEL_SETTINGS,
-	//    .attribute = zb::kZB_ATTR_ID_WAKE_SLEEP_THRESHOLD
-	//},
-	//to_settings_handler<on_wake_sleep_settings_changed>(ZbSettingsEntries::wake_sleep_threshold)
-	//     }
     >;
     ZB_ZCL_REGISTER_DEVICE_CB(dev_cb);
 

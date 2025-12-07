@@ -47,6 +47,7 @@ constexpr uint32_t kFactoryResetWaitMS = 5000;//5s if the dev doesn't join befor
 constexpr int8_t kRestartCountToFactoryReset = 3;
 constexpr uint32_t kRestartCounterResetTimeoutMS = 15000;//after 15s the restart counter is reset back to 3
 constexpr uint32_t kKeepAliveTimeout = 1000*60*30;//30min
+constexpr zb_time_t kWakeUpDurationMS = 8 * 1000;
 
 constexpr auto kInitialCheckInInterval = 30_min_to_qs;
 constexpr auto kInitialLongPollInterval = 60_min_to_qs;//this has to be big in order for the device not to perform permanent parent requests
@@ -68,6 +69,8 @@ static bool g_ZigbeeReady = false;
 
 /* Button to start Factory Reset */
 #define FACTORY_RESET_BUTTON IDENTIFY_MODE_BUTTON
+
+#define WAKE_UP_BUTTON            DK_BTN2_MSK
 
 /* Device endpoint, used to receive light controlling commands. */
 constexpr uint8_t kCO2_EP = 1;
@@ -147,6 +150,15 @@ constinit static auto &zb_ep = zb_ctx.ep<kCO2_EP>();
 static const struct device *const co2sensor = DEVICE_DT_GET(DT_NODELABEL(co2sensor));
 static const struct gpio_dt_spec led_dt = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 constinit const struct device *co2_power = DEVICE_DT_GET(DT_NODELABEL(scd41_power));
+constinit const struct device *battery_measure = DEVICE_DT_GET(DT_NODELABEL(battery_measure));
+
+struct RegRAII
+{
+    RegRAII(const struct device *pD):pDev(pD){ regulator_enable(pD); }
+    ~RegRAII() { regulator_disable(pDev); }
+private:
+    const struct device *pDev;
+};
 
 
 /**********************************************************************/
@@ -275,7 +287,10 @@ void co2_thread_entry(void *, void *, void *)
 
 void update_co2_readings_in_zigbee(uint8_t id)
 {
-    g_Battery.update();
+    {
+	RegRAII batReg(battery_measure);
+	g_Battery.update();
+    }
     if (co2sensor && !g_CO2ErrorState)
     {
 	sensor_value v;
@@ -375,6 +390,14 @@ static void button_changed(uint32_t button_state, uint32_t has_changed)
 	    }
 	}
 	check_factory_reset_button(button_state, has_changed);
+    }else if (WAKE_UP_BUTTON & has_changed)
+    {
+	if (!(WAKE_UP_BUTTON & button_state))
+	{
+	    //released
+	    zb_zdo_pim_start_turbo_poll_continuous(kWakeUpDurationMS);
+	    led::show_pattern(led::kPATTERN_4_BLIPS_NORMED, 1000);
+	}
     }
 }
 

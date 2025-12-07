@@ -55,6 +55,28 @@
 		/* Optional: Specify that this regulator should be off initially */
 		// regulator-boot-on; // Remove or comment out if you want it initially OFF
 	};
+
+	/* Define the GPIO-controlled regulator */
+	battery_measure: battery-measure-regulator {
+		compatible = "regulator-fixed"; // Standard binding for fixed regulators
+		regulator-name = "battery_measure_reg";
+		status = "okay";
+
+		/* GPIO controlling the MOSFET gate */
+		/* GPIO_ACTIVE_HIGH means the sensor is ON when GPIO is high */
+		/* Use GPIO_ACTIVE_LOW if your MOSFET logic is inverted */
+		enable-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+
+		/* Optional: Define the voltage being regulated */
+		// regulator-min-microvolt = ; // e.g., 3.3V
+		// regulator-max-microvolt = ; // e.g., 3.3V
+
+		/* Optional: Delay after enabling GPIO before regulator is considered stable */
+		startup-delay-us = <1>; // 1us, adjust based on MOSFET and sensor VCC rise time
+
+		/* Optional: Specify that this regulator should be off initially */
+		// regulator-boot-on; // Remove or comment out if you want it initially OFF
+	};
 };
 
 // restore full RRAM and SRAM space - by default some parts are dedicated to FLRP

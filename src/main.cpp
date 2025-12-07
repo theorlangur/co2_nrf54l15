@@ -150,15 +150,7 @@ constinit static auto &zb_ep = zb_ctx.ep<kCO2_EP>();
 static const struct device *const co2sensor = DEVICE_DT_GET(DT_NODELABEL(co2sensor));
 static const struct gpio_dt_spec led_dt = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 constinit const struct device *co2_power = DEVICE_DT_GET(DT_NODELABEL(scd41_power));
-constinit const struct device *battery_measure = DEVICE_DT_GET(DT_NODELABEL(battery_measure));
-
-struct RegRAII
-{
-    RegRAII(const struct device *pD):pDev(pD){ regulator_enable(pD); }
-    ~RegRAII() { regulator_disable(pDev); }
-private:
-    const struct device *pDev;
-};
+constexpr const struct device *bat_measure = DEVICE_DT_GET(DT_NODELABEL(battery_measure));
 
 
 /**********************************************************************/
@@ -173,9 +165,9 @@ static const struct adc_dt_spec adc_channels[] = {
 };
 
 static constinit auto g_Battery = zb::make_battery_measurements_block<{
-    .maxBatteryVoltage = 1600,//mV
+    .maxBatteryVoltage = 3600,//mV
     .minBatteryVoltage = 900//mV
-}>(zb_ep, adc_channels);
+}>(zb_ep, adc_channels, bat_measure);
 constexpr zb_callback_t update_battery_state_zb = &decltype(g_Battery)::update_zb_callback;
 
 
@@ -287,10 +279,7 @@ void co2_thread_entry(void *, void *, void *)
 
 void update_co2_readings_in_zigbee(uint8_t id)
 {
-    {
-	RegRAII batReg(battery_measure);
-	g_Battery.update();
-    }
+    g_Battery.update();
     if (co2sensor && !g_CO2ErrorState)
     {
 	sensor_value v;

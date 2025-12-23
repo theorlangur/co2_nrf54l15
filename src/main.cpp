@@ -13,6 +13,7 @@
 #include <zephyr/settings/settings.h>
 #include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/regulator.h>
+#include <zephyr/drivers/sensor/scd4x.h>
 
 #include <ram_pwrdn.h>
 
@@ -30,6 +31,8 @@
 
 #include <nrfzbcpp/zb_alarm.hpp>
 #include <nrfzbcpp/zb_settings.hpp>
+
+#include "zb/zb_scd4x_cluster_desc.hpp"
 
 #include <nrf_general/lib_msgq_typed.hpp>
 
@@ -87,6 +90,7 @@ struct device_ctx_t{
     zb::zb_zcl_co2_basic_t co2_attr;
     zb::zb_zcl_temp_basic_t temp_attr;
     zb::zb_zcl_rel_humid_basic_t humid_attr;
+    zb::zb_zcl_scd4x_t scd4x;
 };
 
 //attribute shortcuts for template arguments
@@ -97,6 +101,10 @@ constexpr auto kAttrCO2Value = &zb::zb_zcl_co2_basic_t::measured_value;
 constexpr auto kAttrTempValue = &zb::zb_zcl_temp_basic_t::measured_value;
 constexpr auto kAttrRelHValue = &zb::zb_zcl_rel_humid_basic_t::measured_value;
 
+constexpr auto kAttrManMeasure = &zb::zb_zcl_scd4x_t::manual_measurements;
+constexpr auto kAttrFactoryResets = &zb::zb_zcl_scd4x_t::factory_resets;
+constexpr auto kAttrSensorVariant = &zb::zb_zcl_scd4x_t::sensor_variant;
+
 constexpr int kSleepSendStatusBit1 = 0;
 constexpr int kSleepSendStatusCodeOffset = 1;
 constexpr int kFlipSendStatusBit1 = 5;
@@ -105,6 +113,8 @@ constexpr int kWakeUpSendStatusBit1 = 10;
 constexpr int kWakeUpSendStatusCodeOffset = 11;
 
 constexpr int kStatusCodeSize = 4;
+
+zb::CmdHandlingResult on_scd4x_factory_reset();
 
 /* Zigbee device application context storage. */
 static constinit device_ctx_t dev_ctx{
@@ -123,6 +133,9 @@ static constinit device_ctx_t dev_ctx{
 	},
     .co2_attr{
 	.measured_value = 0
+    },
+    .scd4x{
+	.cmd_on_factory_reset = {.cb = on_scd4x_factory_reset}
     }
 };
 
@@ -135,8 +148,18 @@ constinit static auto zb_ctx = zb::make_device(
 	    , dev_ctx.co2_attr
 	    , dev_ctx.temp_attr
 	    , dev_ctx.humid_attr
+	    , dev_ctx.scd4x
 	    )
 	);
+
+/**********************************************************************/
+/* Defining access to the global zigbee device context                */
+/**********************************************************************/
+//needed for proper command handling
+struct zb::global_device
+{
+    static auto& get() { return zb_ctx; }
+};
 
 //a shortcut for a convenient access
 constinit static auto &zb_ep = zb_ctx.ep<kCO2_EP>();
@@ -183,6 +206,7 @@ enum class CO2Commands
     Initial
     , Fetch
     , ManualFetch
+    , FactoryReset
 };
 
 using CO2Q = msgq::Queue<CO2Commands,4>;
@@ -228,6 +252,9 @@ bool update_measurements()
 		sensor_sample_fetch(co2sensor);
 	}
 
+	if (!dev_ctx.scd4x.sensor_variant)
+	    scd4x_get_variant(co2sensor, &dev_ctx.scd4x.sensor_variant, false);
+
 	res = true;
     }
 
@@ -251,6 +278,16 @@ void co2_thread_entry(void *, void *, void *)
 	switch(cmd)
 	{
 	    using enum CO2Commands;
+	    case FactoryReset:
+	    {
+		zb::RegRAII co2Reg(co2_power);
+		device_init(co2sensor);
+		if (device_is_ready(co2sensor)) {
+		    scd4x_factory_reset(co2sensor);
+		    led::show_pattern(led::kPATTERN_2_BLIPS_NORMED, 2000);
+		}
+	    }
+	    break;
 	    case Initial:
 	    {
 		g_CO2ErrorState = !update_measurements();
@@ -298,6 +335,15 @@ void update_co2_readings_in_zigbee(uint8_t id)
 	if (!co2sensor) zb_ep.attr<kAttrStatus2>() = -1;
     }
 }
+
+zb::CmdHandlingResult on_scd4x_factory_reset()
+{
+    zb_ep.attr<kAttrFactoryResets>() = dev_ctx.scd4x.factory_resets + 1;
+    co2v2 << CO2Commands::FactoryReset;
+    co2v2 << CO2Commands::ManualFetch;
+    return {};
+}
+
 
 /**********************************************************************/
 /* General Zigbee stuff                                               */
@@ -385,7 +431,9 @@ static void button_changed(uint32_t button_state, uint32_t has_changed)
 	{
 	    //released
 	    zb_zdo_pim_start_turbo_poll_continuous(kWakeUpDurationMS);
+	    co2v2 << CO2Commands::ManualFetch;
 	    led::show_pattern(led::kPATTERN_4_BLIPS_NORMED, 1000);
+	    zb_ep.attr<kAttrManMeasure>() = dev_ctx.scd4x.manual_measurements + 1;
 	}
     }
 }

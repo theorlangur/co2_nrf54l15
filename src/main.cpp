@@ -446,8 +446,46 @@ int main(void)
 {
     int ret;
     bool led_state = true;
+    //k_msleep(5000);
 
     printk("Main start\r\n");
+    //regulator_enable(co2_power);
+    //printk("Co2 power enabled\r\n");
+    //k_msleep(5000);
+    //device_init(co2sensor);
+	//   if (device_is_ready(co2sensor)) {
+	//uint16_t var = -1;
+	//ret = scd4x_get_variant(co2sensor, &var, false);
+	//if (ret < 0)
+	//{
+	//    printk("get variant failed with %d\r\n", ret);
+	//}else
+	//{
+	//    printk("get variant: %d\r\n", var);
+	//}
+	//printk("co2 sampling...\r\n");
+	//sensor_sample_fetch(co2sensor);
+	//sensor_value v;
+	//sensor_channel_get(co2sensor, SENSOR_CHAN_CO2, &v);
+	//printk("CO2: %d %d\r\n", v.val1, v.val2);
+	//   }else
+	//   {
+	//printk("co2 init failed\r\n");
+	//   }
+	//   if (device_is_ready(eco2sensor)) {
+	//sensor_sample_fetch(eco2sensor);
+	//sensor_value v;
+	//sensor_channel_get(eco2sensor, SENSOR_CHAN_CO2, &v);
+	//printk("eCO2: %d %d\r\n", v.val1, v.val2);
+	//sensor_channel_get(eco2sensor, SENSOR_CHAN_VOC, &v);
+	//printk("VOC: %d %d\r\n", v.val1, v.val2);
+	//   }else
+	//   {
+	//printk("eco2 init failed\r\n");
+	//   }
+	//   return 0;
+
+
     if (led::setup() < 0)
 	return 0;
     led::start();

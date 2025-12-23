@@ -69,6 +69,7 @@ const orlangurSCD4XExtended = {
             exposes,
             fromZigbee,
             toZigbee,
+            configure,
             isModernExtend: true,
         };
     },

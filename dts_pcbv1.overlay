@@ -50,7 +50,7 @@
 		// regulator-max-microvolt = ; // e.g., 3.3V
 
 		/* Optional: Delay after enabling GPIO before regulator is considered stable */
-		startup-delay-us = <1300000>; // 1us, adjust based on MOSFET and sensor VCC rise time
+		startup-delay-us = <1100000>; // 1us, adjust based on MOSFET and sensor VCC rise time
 
 		/* Optional: Specify that this regulator should be off initially */
 		//regulator-boot-on; // Remove or comment out if you want it initially OFF

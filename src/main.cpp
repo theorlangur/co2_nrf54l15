@@ -228,32 +228,24 @@ K_THREAD_DEFINE(co2_thread, CO2_THREAD_STACK_SIZE,
 
 bool update_measurements()
 {
-    bool needsPowerCycle = false;
+    bool needsPowerCycle = true;
     bool res = false;
-    if ((needsPowerCycle = !regulator_is_enabled(co2_power)))
+    //if ((needsPowerCycle = !regulator_is_enabled(co2_power)))
     {
 	regulator_enable(co2_power);
 	device_init(co2sensor);
     }
     if (device_is_ready(co2sensor)) {
-	int err = -EAGAIN;
-	int max_attempts = 3;
-	while((err == -EAGAIN) && max_attempts)
-	{
-	    err = sensor_sample_fetch(co2sensor);
-	    if (err == -EAGAIN)
-		k_sleep(K_MSEC(1000));
-	    --max_attempts;
-	}
+	if (!dev_ctx.scd4x.sensor_variant)
+	    scd4x_get_variant(co2sensor, &dev_ctx.scd4x.sensor_variant, false);
+
+	int err = sensor_sample_fetch(co2sensor);
 
 	if (err == 0)
 	{
 	    if (needsPowerCycle) //after power up 2 fetches are needed
 		sensor_sample_fetch(co2sensor);
 	}
-
-	if (!dev_ctx.scd4x.sensor_variant)
-	    scd4x_get_variant(co2sensor, &dev_ctx.scd4x.sensor_variant, false);
 
 	res = true;
     }

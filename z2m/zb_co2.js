@@ -42,7 +42,7 @@ const orlangurSCD4XExtended = {
                 },
             },
             {
-                key: "cmd_factory_reset",
+                key: ["cmd_factory_reset"],
                 convertSet: async (entity, key, value, meta) => {
                     await entity.command("customSCD4x", "factoryResetSCD4X", {}, {
                         disableDefaultResponse: true,

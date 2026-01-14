@@ -6,10 +6,39 @@
     "version": "0.2.0",
     "configurations": [
         {
+          "name": "Cortex-Debug Start",
+          "cwd": "${workspaceRoot}",
+          "executable": "${workspaceFolder}/build_ezurio_llvm/co2_nrf54l15/zephyr/zephyr.elf",
+          "request": "launch",
+          "type": "cortex-debug",
+          "servertype": "jlink",
+          "interface": "swd",
+          "device": "cortex-m33",
+          "rtos": "Zephyr",
+          "runToMain": true,
+          "preRestartCommands": [
+            "enable breakpoint"
+          ]
+        },
+        {
+          "name": "Cortex-Debug Attach",
+          "cwd": "${workspaceRoot}",
+          "executable": "${workspaceFolder}/build_ezurio_llvm/co2_nrf54l15/zephyr/zephyr.elf",
+          "request": "attach",
+          "type": "cortex-debug",
+          "servertype": "jlink",
+          "interface": "swd",
+          "device": "cortex-m33",
+          "rtos": "Zephyr",
+          "preRestartCommands": [
+            "enable breakpoint"
+          ]
+        },
+        {
             "name": "Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build_ezurio_llvm/accel_zigbee/zephyr/zephyr.elf",
+            "program": "${workspaceFolder}/build_ezurio_llvm/co2_nrf54l15/zephyr/zephyr.elf",
             "cwd": "${workspaceFolder}",
             "miDebuggerPath": "/home/theorlangur/ncs/toolchains/7cbc0036f4/opt/zephyr-sdk/arm-zephyr-eabi/bin/arm-zephyr-eabi-gdb",
             "miDebuggerServerAddress": "localhost:44477",
